@@ -11,7 +11,7 @@ import csv
 import hashlib
 import os
 import re
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -58,11 +58,17 @@ def _normalize_effective_date(raw: str) -> Tuple[str, str]:
     if not s:
         return "", "empty_effective_date"
     if _ISO_DATE.match(s):
-        return s, ""
+        try:
+            return date.fromisoformat(s).isoformat(), ""
+        except ValueError:
+            return "", "invalid_effective_date_value"
     m = _DMY_SLASH.match(s)
     if m:
         dd, mm, yyyy = m.group(1), m.group(2), m.group(3)
-        return f"{yyyy}-{mm}-{dd}", ""
+        try:
+            return datetime.strptime(f"{dd}/{mm}/{yyyy}", "%d/%m/%Y").date().isoformat(), ""
+        except ValueError:
+            return "", "invalid_effective_date_value"
     return "", "invalid_effective_date_format"
 
 
@@ -136,7 +142,7 @@ def clean_rows(
     9) Sinh chunk_id ổn định từ doc_id + normalized content.
     """
     quarantine: List[Dict[str, Any]] = []
-    seen_text: set[str] = set()
+    seen_text: set[tuple[str, str]] = set()
     cleaned: List[Dict[str, Any]] = []
     for raw in rows:
         doc_id = raw.get("doc_id", "")
@@ -152,7 +158,7 @@ def clean_rows(
         if eff_err == "empty_effective_date":
             quarantine.append({**raw, "reason": "missing_effective_date"})
             continue
-        if eff_err == "invalid_effective_date_format":
+        if eff_err:
             quarantine.append({**raw, "reason": eff_err, "effective_date_raw": eff_raw})
             continue
 
@@ -180,7 +186,7 @@ def clean_rows(
             quarantine.append({**raw, "reason": "stale_hr_policy_content"})
             continue
 
-        key = _norm_text(text)
+        key = (doc_id, _norm_text(text))
         if key in seen_text:
             quarantine.append({**raw, "reason": "duplicate_chunk_text"})
             continue

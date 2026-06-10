@@ -39,7 +39,10 @@ def check_grading_jsonl(path: Path) -> Tuple[int, List[str]]:
     if not path.is_file():
         return 1, [f"MISSING: {path}"]
 
-    rows = _load_jsonl(path)
+    try:
+        rows = _load_jsonl(path)
+    except (OSError, ValueError) as exc:
+        return 1, [f"FAIL: cannot read grading JSONL: {exc}"]
     if len(rows) < 10:
         msgs.append(f"WARN: expected >=10 grading rows, got {len(rows)}")
 
@@ -89,16 +92,35 @@ def check_manifest(path: Path) -> Tuple[int, List[str]]:
     msgs: List[str] = []
     if not path.is_file():
         return 1, [f"MISSING manifest: {path}"]
-    data = json.loads(path.read_text(encoding="utf-8"))
-    for k in ("run_id", "raw_records", "cleaned_records", "quarantine_records"):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return 1, [f"FAIL: cannot read manifest: {exc}"]
+    except json.JSONDecodeError as exc:
+        return 1, [f"FAIL: invalid manifest JSON: {exc}"]
+    for k in (
+        "run_id",
+        "raw_records",
+        "cleaned_records",
+        "quarantine_records",
+        "published_vectors",
+        "publish_strategy",
+        "source_watermarks",
+        "published_at",
+    ):
         if k not in data:
             msgs.append(f"FAIL: manifest missing {k}")
+    if data.get("published_vectors") != data.get("cleaned_records"):
+        msgs.append(
+            "FAIL: published_vectors does not match cleaned_records "
+            f"({data.get('published_vectors')} != {data.get('cleaned_records')})"
+        )
     if msgs:
         return 1, msgs
     msgs.append(
         f"OK manifest run_id={data.get('run_id')} "
         f"raw={data.get('raw_records')} clean={data.get('cleaned_records')} "
-        f"quar={data.get('quarantine_records')}"
+        f"quar={data.get('quarantine_records')} vectors={data.get('published_vectors')}"
     )
     return 0, msgs
 

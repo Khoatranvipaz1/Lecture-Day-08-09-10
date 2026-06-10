@@ -17,8 +17,10 @@ upsert idempotent và prune được vector không còn trong snapshot.
 
 Trong `quality/expectations.py`, tôi thêm các quality gate
 `required_canonical_sources_present`, `unique_nonempty_chunk_id`,
-`exported_at_iso_datetime` và `no_known_noise_markers`. Tôi chạy pipeline,
-retrieval eval, grading, freshness check; sau đó hoàn thiện
+`exported_at_iso_datetime` và `no_known_noise_markers`. Tôi thêm
+`quality/schema.py` với model Pydantic `CleanedChunk` để validate kiểu `date`,
+`datetime`, required fields, min length và cấm extra field trước publish. Tôi
+chạy pipeline, retrieval eval, grading, freshness check; sau đó hoàn thiện
 `contracts/data_contract.yaml`, ba tài liệu trong `docs/`, quality report và
 group report.
 
@@ -28,9 +30,11 @@ Quyết định quan trọng nhất là dùng severity `halt` cho lỗi có th�
 lời sai chính sách: thiếu nguồn canonical, stale refund, HR version cũ, ID trùng
 hoặc timestamp không hợp lệ. Rule độ dài chunk chỉ là `warn`, vì một chunk ngắn
 không nhất thiết sai fact. Với freshness, tôi tách hai boundary:
-`latest_exported_at` đo độ mới của dữ liệu nguồn và `published_at` đo thời điểm
-pipeline vừa publish. Nhờ vậy run `final-good` cho thấy job publish vẫn chạy
-bình thường dù source upstream đã stale.
+watermark theo từng source đo độ mới upstream, watermark cũ nhất quyết định SLA,
+và `published_at` đo thời điểm pipeline vừa publish. Nhờ vậy run `final-good`
+cho thấy job publish vẫn chạy bình thường dù source upstream đã stale. Tôi cũng
+đổi publish order thành upsert, verify đủ 33 target IDs rồi mới prune, tránh xóa
+ID stale quá sớm. Cách này giảm rủi ro nhưng chưa thay thế atomic alias swap.
 
 ## 3. Sự cố và cách xử lý
 

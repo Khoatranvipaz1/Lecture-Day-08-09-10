@@ -42,6 +42,9 @@ quality_rules:
     severity: "halt"
   - id: "no_known_noise_markers"
     severity: "halt"
+  - id: "pydantic_cleaned_schema_contract"
+    description: "Mọi cleaned row phải validate bằng model CleanedChunk trước publish"
+    severity: "halt"
 
 freshness:
   measured_at: "publish"  # ingest | cleaned | publish

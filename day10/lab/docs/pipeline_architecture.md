@@ -14,10 +14,12 @@ flowchart LR
     B --> Q[Quarantine CSV + reason]
     C --> D{Expectation suite}
     D -->|halt| Q
-    D -->|pass| E[Chroma upsert by stable chunk_id]
-    E --> F[Prune stale vector IDs]
-    F --> G[Retrieval / grading]
-    E --> M[Manifest]
+    D -->|pass| E[Pydantic schema contract]
+    E --> F[Chroma upsert by stable chunk_id]
+    F --> V[Verify all target IDs exist]
+    V --> P[Prune stale vector IDs]
+    P --> G[Retrieval / grading]
+    P --> M[Manifest]
     M --> H[Freshness: source and publish boundaries]
 ```
 
@@ -37,8 +39,11 @@ flowchart LR
 
 ## 3. Idempotency & rerun
 
-`chunk_id` là SHA-256 rút gọn của `doc_id` và nội dung đã normalize. Pipeline dùng
-Chroma `upsert`, sau đó prune mọi ID không còn trong snapshot cleaned. Test
+`chunk_id` là SHA-256 rút gọn của `doc_id` và nội dung đã normalize. Pipeline
+upsert trước, verify đủ toàn bộ target IDs rồi mới prune ID cũ. Thứ tự này tránh
+xóa ID stale trước khi biết target đã publish đủ. Nó chưa atomic vì upsert có
+thể cập nhật một phần target; production cần staging collection + alias swap.
+Test
 `test_chunk_ids_are_stable_across_reruns` xác nhận hai lần clean tạo cùng dãy ID;
 run lại `final-good` giữ collection ở 33 vectors, không phát sinh duplicate.
 

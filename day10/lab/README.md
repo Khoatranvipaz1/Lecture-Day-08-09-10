@@ -7,6 +7,8 @@
 
 **Slide:** [`../lecture-10.html`](../lecture-10.html)
 
+**Tài liệu triển khai:** [`docs/implementation_guide.md`](docs/implementation_guide.md)
+
 ---
 
 ## Bối cảnh
@@ -85,12 +87,14 @@ lab/
 ├── etl_pipeline.py           # Sprint 1–2: run ingest→clean→validate→embed
 ├── eval_retrieval.py         # Sprint 3–4: before/after retrieval (CSV)
 ├── grading_run.py            # Grading chính thức — 10 câu đánh giá
+├── evaluation_utils.py       # Loader + scoring dùng chung cho hai entrypoint eval
 ├── instructor_quick_check.py # GV: sanity artifact grading/manifest (tuỳ chọn)
 │
 ├── transform/
 │   └── cleaning_rules.py     # ⚠️ Baseline chưa đủ — sinh viên phải sửa + mở rộng
 ├── quality/
-│   └── expectations.py       # Baseline expectations — sinh viên thêm ≥2 mới
+│   ├── expectations.py       # Quality gates warn/halt
+│   └── schema.py             # Pydantic contract cho cleaned rows
 ├── monitoring/
 │   └── freshness_check.py    # Đọc manifest + SLA đơn giản
 │
@@ -158,11 +162,12 @@ cp .env.example .env
 | Log đủ run_id và volume | raw 247, cleaned 33, quarantine 214 | PASS |
 | ≥3 cleaning rules mới | exported timestamp, HR content/cutoff, noise/repeat cleanup, stable ID | PASS |
 | ≥2 expectations mới | source coverage, unique ID, exported datetime, noise markers | PASS |
-| Idempotent + prune | stable `chunk_id`, Chroma upsert/prune | PASS |
+| Pydantic schema validation | `quality/schema.py` + expectation halt | PASS, bonus rubric |
+| Idempotent + safe prune | stable ID, upsert → verify 33 IDs → prune | PASS |
 | Try/except theo stage | JSON, file I/O, model/Chroma, query, upsert | Exit code có kiểm soát, không traceback thô |
 | Before/after retrieval | `after_inject_bad.csv` → `after_fix.csv` | 20/21 → 21/21 |
 | Grading chính thức | `artifacts/eval/grading_run.jsonl` | 10/10 |
-| Freshness hai boundary | manifest `latest_exported_at` + `published_at` | Source FAIL đúng kỳ vọng; publish mới |
+| Freshness hai boundary | per-source watermarks + `published_at` | Source FAIL đúng kỳ vọng; publish mới |
 | Docs + reports | `docs/*.md`, `reports/group_report.md`, `reports/individual/khoa.md` | PASS |
 
 Lệnh kiểm tra lại toàn bộ kết quả cuối:

@@ -10,31 +10,16 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import os
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+from evaluation_utils import load_questions, positive_int, score_retrieval
 
 load_dotenv()
 
 ROOT = Path(__file__).resolve().parent
-
-
-def _load_questions(path: Path) -> list[dict]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise ValueError(f"cannot read questions file: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"invalid questions JSON: {exc}") from exc
-    if not isinstance(data, list) or not data:
-        raise ValueError("questions JSON must be a non-empty list")
-    for index, question in enumerate(data, 1):
-        if not isinstance(question, dict) or not str(question.get("question") or "").strip():
-            raise ValueError(f"question #{index} is missing a non-empty 'question'")
-    return data
 
 
 def main() -> int:
@@ -49,7 +34,7 @@ def main() -> int:
         default=str(ROOT / "artifacts" / "eval" / "before_after_eval.csv"),
         help="CSV kết quả",
     )
-    parser.add_argument("--top-k", type=int, default=3)
+    parser.add_argument("--top-k", type=positive_int, default=3)
     args = parser.parse_args()
 
     try:
@@ -65,7 +50,7 @@ def main() -> int:
         return 1
 
     try:
-        questions = _load_questions(qpath)
+        questions = load_questions(qpath)
     except ValueError as exc:
         print(f"Questions error: {exc}", file=sys.stderr)
         return 2
@@ -83,6 +68,7 @@ def main() -> int:
         return 3
 
     out_path = Path(args.out)
+    tmp_path = out_path.with_name(f".{out_path.name}.{os.getpid()}.tmp")
     try:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         fieldnames = [
@@ -95,7 +81,7 @@ def main() -> int:
             "top1_doc_expected",
             "top_k_used",
         ]
-        with out_path.open("w", encoding="utf-8", newline="") as fcsv:
+        with tmp_path.open("w", encoding="utf-8", newline="") as fcsv:
             w = csv.DictWriter(fcsv, fieldnames=fieldnames)
             w.writeheader()
             for q in questions:
@@ -103,6 +89,7 @@ def main() -> int:
                 try:
                     res = col.query(query_texts=[text], n_results=args.top_k)
                 except Exception as exc:
+                    tmp_path.unlink(missing_ok=True)
                     print(
                         f"Query error for {q.get('id', '<unknown>')}: {exc}",
                         file=sys.stderr,
@@ -110,30 +97,26 @@ def main() -> int:
                     return 4
                 docs = (res.get("documents") or [[]])[0]
                 metas = (res.get("metadatas") or [[]])[0]
-                top_doc = (metas[0] or {}).get("doc_id", "") if metas else ""
+                score = score_retrieval(q, docs, metas)
                 preview = (docs[0] or "")[:180].replace("\n", " ") if docs else ""
-                blob = " ".join(docs).lower()
-                must_any = [x.lower() for x in q.get("must_contain_any", [])]
-                forbidden = [x.lower() for x in q.get("must_not_contain", [])]
-                ok_any = any(m in blob for m in must_any) if must_any else True
-                bad_forb = any(m in blob for m in forbidden) if forbidden else False
-                want_top1 = (q.get("expect_top1_doc_id") or "").strip()
                 top1_expected = ""
-                if want_top1:
-                    top1_expected = "yes" if top_doc == want_top1 else "no"
+                if score["expected_doc"]:
+                    top1_expected = "yes" if score["top1_matches"] else "no"
                 w.writerow(
                     {
                         "question_id": q.get("id", ""),
                         "question": text,
-                        "top1_doc_id": top_doc,
+                        "top1_doc_id": score["top_doc"],
                         "top1_preview": preview,
-                        "contains_expected": "yes" if ok_any else "no",
-                        "hits_forbidden": "yes" if bad_forb else "no",
+                        "contains_expected": "yes" if score["contains_expected"] else "no",
+                        "hits_forbidden": "yes" if score["hits_forbidden"] else "no",
                         "top1_doc_expected": top1_expected,
                         "top_k_used": args.top_k,
                     }
                 )
+        tmp_path.replace(out_path)
     except OSError as exc:
+        tmp_path.unlink(missing_ok=True)
         print(f"Output error: {exc}", file=sys.stderr)
         return 5
 

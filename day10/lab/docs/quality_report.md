@@ -32,17 +32,20 @@ Artifact: `artifacts/eval/after_inject_bad.csv` và
 
 ## 3. Freshness
 
-SLA là 24 giờ. Source boundary FAIL vì `latest_exported_at` là
-`2026-04-10T00:00:00`, cũ hơn 1.400 giờ tại thời điểm chạy. Publish boundary
-có `publish_age_hours=0`, chứng minh snapshot vừa được tạo. Đây là incident
-upstream freshness, không phải job publish bị treo.
+SLA là 24 giờ. Pipeline ghi watermark riêng cho năm nguồn và dùng watermark cũ
+nhất để quyết định SLA. Cả năm source hiện có watermark
+`2026-04-10T00:00:00`, cũ hơn 1.400 giờ tại thời điểm chạy. Publish boundary có
+`publish_age_hours=0`, chứng minh snapshot vừa được tạo. Đây là incident upstream
+freshness, không phải job publish bị treo.
 
 ## 4. Corruption inject
 
 Run `inject-bad` dùng `--no-refund-fix --skip-validate`. Expectation
 `refund_no_stale_14d_window` fail nhưng demo vẫn embed để tạo bằng chứng. Eval
-phát hiện forbidden context 14 ngày. Run chuẩn prune vector stale rồi upsert 33
-stable IDs.
+phát hiện forbidden context 14 ngày. Run chuẩn publish 33 stable IDs. Cả hai run
+đều có `pydantic_cleaned_schema_contract OK`,
+`embed_verify count=33` và `embed_snapshot_count=33`; pipeline thực tế upsert,
+verify rồi mới prune.
 
 ## 5. Hạn chế
 

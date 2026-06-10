@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
+from quality.schema import validate_cleaned_rows
+
 REQUIRED_DOC_IDS = {
     "policy_refund_v4",
     "sla_p1_2026",
@@ -178,6 +180,17 @@ def run_expectations(cleaned_rows: List[Dict[str, Any]]) -> Tuple[List[Expectati
             not noisy,
             "halt",
             f"violations={len(noisy)}",
+        )
+    )
+
+    # E11: schema contract thật bằng Pydantic trước khi publish.
+    schema_errors = validate_cleaned_rows(cleaned_rows)
+    results.append(
+        ExpectationResult(
+            "pydantic_cleaned_schema_contract",
+            not schema_errors,
+            "halt",
+            f"errors={len(schema_errors)}, sample={schema_errors[:2]}",
         )
     )
 

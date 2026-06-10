@@ -48,6 +48,7 @@ upsert kèm prune biến collection thành snapshot idempotent.
 | HR stale theo content/cutoff | expectation HR fail | 7 stale-content + 19 stale-date quarantine | `quarantine_final-good.csv` |
 | Normalize noise/repeated payload | marker/payload có thể publish | 4 row ambiguous/repeated bị quarantine | `quarantine_final-good.csv` |
 | Stable IDs + uniqueness gate | ID phụ thuộc sequence | 33 unique IDs, rerun ổn định | `test_pipeline.py` |
+| Pydantic cleaned contract | custom checks rời rạc | 33/33 rows validate, 0 errors | `run_final-good.log` |
 | Refund expectation inject | pass ở run chuẩn | fail 1 violation khi inject | `run_inject-bad.log` |
 | Refund corruption gate | eval inject 20/21 | eval clean 21/21 | hai CSV eval |
 
@@ -56,6 +57,7 @@ upsert kèm prune biến collection thành snapshot idempotent.
 - Allowlist 5 nguồn, normalize effective date và exported timestamp.
 - Quarantine missing fields, unknown source, HR version cũ và repeated payload.
 - Dedupe nội dung, sửa stale refund 14 thành 7 ngày, normalize operational text.
+- Pydantic validate date/datetime, required fields, min length và cấm extra field.
 - Halt khi thiếu source, stale refund/HR, ID trùng, datetime sai hoặc còn noise.
 
 **Ví dụ 1 lần expectation fail (nếu có) và cách xử lý:**
@@ -77,8 +79,8 @@ Tắt refund fix và cố ý bỏ halt để publish context 14 ngày.
 **Kết quả định lượng (từ CSV / bảng):**
 
 Run inject đạt 20/21; `q_refund_window` có `hits_forbidden=yes`. Sau fix đạt
-21/21, còn grading chính thức đạt 10/10. Pipeline prune 1 ID thay đổi rồi upsert
-33 vectors. HR 12 ngày và Access Control Level 4 đều đúng top-1.
+21/21, còn grading chính thức đạt 10/10. Pipeline upsert, verify đủ 33 IDs rồi
+prune 1 ID stale. HR 12 ngày và Access Control Level 4 đều đúng top-1.
 
 ---
 
@@ -111,5 +113,5 @@ collection này sau khi quality gate pass.
 ## 7. Peer review
 
 - Rerun không duplicate vì stable `chunk_id`, upsert và prune.
-- Freshness đo cả `latest_exported_at` và `published_at`.
+- Freshness đo watermark từng source, source cũ nhất và `published_at`.
 - Record bị flag vào quarantine CSV có reason, Data Owner approve trước rerun.

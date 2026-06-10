@@ -42,8 +42,17 @@ def check_manifest_freshness(
     if not manifest_path.is_file():
         return "FAIL", {"reason": "manifest_missing", "path": str(manifest_path)}
 
-    data: Dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
-    ts_raw = data.get("latest_exported_at") or data.get("run_timestamp")
+    try:
+        data: Dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        return "FAIL", {"reason": "manifest_read_error", "error": str(exc)}
+    except json.JSONDecodeError as exc:
+        return "FAIL", {"reason": "manifest_invalid_json", "error": str(exc)}
+    ts_raw = (
+        data.get("oldest_source_exported_at")
+        or data.get("latest_exported_at")
+        or data.get("run_timestamp")
+    )
     dt = parse_iso(str(ts_raw)) if ts_raw else None
     if dt is None:
         return "WARN", {"reason": "no_timestamp_in_manifest", "manifest": data}
@@ -55,12 +64,15 @@ def check_manifest_freshness(
     if published_dt is not None:
         publish_age_hours = max(0.0, (now - published_dt).total_seconds() / 3600.0)
     detail = {
-        "latest_exported_at": ts_raw,
+        "source_watermark_at": ts_raw,
+        "source_watermarks": data.get("source_watermarks", {}),
         "age_hours": round(age_hours, 3),
         "published_at": published_raw,
         "publish_age_hours": round(publish_age_hours, 3) if publish_age_hours is not None else None,
         "sla_hours": sla_hours,
     }
     if age_hours <= sla_hours:
+        if published_dt is None:
+            return "WARN", {**detail, "reason": "publish_timestamp_missing_or_invalid"}
         return "PASS", detail
     return "FAIL", {**detail, "reason": "freshness_sla_exceeded"}

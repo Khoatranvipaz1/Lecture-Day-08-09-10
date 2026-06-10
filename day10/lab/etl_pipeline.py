@@ -103,8 +103,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 3
 
     latest_exported = ""
+    source_watermarks: dict[str, str] = {}
     if cleaned:
         latest_exported = max((r.get("exported_at") or "" for r in cleaned), default="")
+        for row in cleaned:
+            doc_id = str(row.get("doc_id") or "")
+            exported_at = str(row.get("exported_at") or "")
+            source_watermarks[doc_id] = max(source_watermarks.get(doc_id, ""), exported_at)
+    oldest_source_exported = min(source_watermarks.values(), default="")
 
     manifest = {
         "run_id": run_id,
@@ -113,7 +119,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         "raw_records": raw_count,
         "cleaned_records": len(cleaned),
         "quarantine_records": len(quarantine),
+        "published_vectors": len(cleaned),
+        "publish_strategy": "upsert_verify_prune",
         "latest_exported_at": latest_exported,
+        "oldest_source_exported_at": oldest_source_exported,
+        "source_watermarks": source_watermarks,
         "published_at": datetime.now(timezone.utc).isoformat(),
         "no_refund_fix": bool(args.no_refund_fix),
         "skipped_validate": bool(args.skip_validate and halt),
@@ -167,16 +177,13 @@ def cmd_embed_internal(cleaned_csv: Path, *, run_id: str, log) -> bool:
         return False
 
     ids = [r["chunk_id"] for r in rows]
-    # Tránh “mồi cũ” trong top-k: xóa id không còn trong cleaned run này (index = snapshot publish).
+    target_ids = set(ids)
+    previous_ids: set[str] = set()
     try:
         prev = col.get(include=[])
-        prev_ids = set(prev.get("ids") or [])
-        drop = sorted(prev_ids - set(ids))
-        if drop:
-            col.delete(ids=drop)
-            log(f"embed_prune_removed={len(drop)}")
+        previous_ids = set(prev.get("ids") or [])
     except Exception as e:
-        log(f"WARN: embed prune skip: {e}")
+        log(f"WARN: cannot inspect previous snapshot: {e}")
     documents = [r["chunk_text"] for r in rows]
     metadatas = [
         {
@@ -186,13 +193,49 @@ def cmd_embed_internal(cleaned_csv: Path, *, run_id: str, log) -> bool:
         }
         for r in rows
     ]
-    # Idempotent: upsert theo chunk_id
+    # Publish new/changed rows first so an upsert failure cannot remove serving data.
     try:
         col.upsert(ids=ids, documents=documents, metadatas=metadatas)
     except Exception as exc:
         log(f"ERROR: embed upsert failed: {exc}")
         return False
     log(f"embed_upsert count={len(ids)} collection={collection_name}")
+
+    try:
+        published = col.get(ids=ids, include=[])
+        published_ids = set(published.get("ids") or [])
+    except Exception as exc:
+        log(f"ERROR: embed verification failed: {exc}")
+        return False
+    missing_ids = sorted(target_ids - published_ids)
+    if missing_ids:
+        log(f"ERROR: embed verification missing_ids={len(missing_ids)}")
+        return False
+    log(f"embed_verify count={len(published_ids)}")
+
+    # Prune only after the target snapshot has been verified.
+    drop = sorted(previous_ids - target_ids)
+    if drop:
+        try:
+            col.delete(ids=drop)
+        except Exception as exc:
+            log(f"ERROR: embed prune failed: {exc}")
+            return False
+    log(f"embed_prune_removed={len(drop)}")
+
+    try:
+        final = col.get(include=[])
+        final_ids = set(final.get("ids") or [])
+    except Exception as exc:
+        log(f"ERROR: final snapshot verification failed: {exc}")
+        return False
+    if final_ids != target_ids:
+        log(
+            "ERROR: final snapshot mismatch "
+            f"expected={len(target_ids)} actual={len(final_ids)}"
+        )
+        return False
+    log(f"embed_snapshot_count={len(final_ids)}")
     return True
 
 

@@ -26,6 +26,9 @@
 | effective_date | date | Có | ISO `YYYY-MM-DD` |
 | exported_at | datetime | Có | ISO datetime, dùng đo source freshness |
 
+Model `quality.schema.CleanedChunk` dùng Pydantic v2 với `extra="forbid"` và
+validate kiểu thật cho `date`, `datetime`, độ dài chuỗi trước khi embed.
+
 ---
 
 ## 3. Quy tắc quarantine vs drop

@@ -1,10 +1,12 @@
+import argparse
 from pathlib import Path
 
 import pytest
 
-from eval_retrieval import _load_questions as load_eval_questions
-from grading_run import _load_questions as load_grading_questions
+from evaluation_utils import load_questions, positive_int
+from monitoring.freshness_check import check_manifest_freshness
 from quality.expectations import run_expectations
+from quality.schema import validate_cleaned_rows
 from transform.cleaning_rules import clean_rows, load_raw_csv
 
 
@@ -51,19 +53,109 @@ def test_chunk_ids_are_stable_across_reruns() -> None:
     assert [r["chunk_id"] for r in first] == [r["chunk_id"] for r in second]
 
 
-@pytest.mark.parametrize("loader", [load_eval_questions, load_grading_questions])
-def test_question_loader_rejects_invalid_json(tmp_path: Path, loader) -> None:
+def test_cleaning_rejects_invalid_calendar_date() -> None:
+    cleaned, quarantine = clean_rows(
+        [
+            {
+                "doc_id": "policy_refund_v4",
+                "chunk_text": "Nội dung hợp lệ đủ dài để kiểm tra ngày.",
+                "effective_date": "2026-02-30",
+                "exported_at": "2026-04-10T00:00:00",
+            }
+        ]
+    )
+
+    assert cleaned == []
+    assert quarantine[0]["reason"] == "invalid_effective_date_value"
+
+
+def test_dedupe_is_scoped_to_document() -> None:
+    shared_text = "Nội dung giống nhau nhưng thuộc hai tài liệu canonical khác nhau."
+    cleaned, quarantine = clean_rows(
+        [
+            {
+                "doc_id": "policy_refund_v4",
+                "chunk_text": shared_text,
+                "effective_date": "2026-02-01",
+                "exported_at": "2026-04-10T00:00:00",
+            },
+            {
+                "doc_id": "sla_p1_2026",
+                "chunk_text": shared_text,
+                "effective_date": "2026-01-15",
+                "exported_at": "2026-04-10T00:00:00",
+            },
+        ]
+    )
+
+    assert len(cleaned) == 2
+    assert quarantine == []
+
+
+def test_pydantic_contract_rejects_invalid_cleaned_row() -> None:
+    errors = validate_cleaned_rows(
+        [
+            {
+                "chunk_id": "",
+                "doc_id": "policy_refund_v4",
+                "chunk_text": "short",
+                "effective_date": "not-a-date",
+                "exported_at": "not-a-datetime",
+            }
+        ]
+    )
+
+    assert any("chunk_id" in error for error in errors)
+    assert any("chunk_text" in error for error in errors)
+    assert any("effective_date" in error for error in errors)
+    assert any("exported_at" in error for error in errors)
+
+
+def test_question_loader_rejects_invalid_json(tmp_path: Path) -> None:
     bad = tmp_path / "bad.json"
     bad.write_text("{not-json", encoding="utf-8")
 
     with pytest.raises(ValueError, match="invalid questions JSON"):
-        loader(bad)
+        load_questions(bad)
 
 
-@pytest.mark.parametrize("loader", [load_eval_questions, load_grading_questions])
-def test_question_loader_rejects_missing_question(tmp_path: Path, loader) -> None:
+def test_question_loader_rejects_missing_question(tmp_path: Path) -> None:
     bad = tmp_path / "bad-shape.json"
     bad.write_text('[{"id": "q1"}]', encoding="utf-8")
 
     with pytest.raises(ValueError, match="missing a non-empty 'question'"):
-        loader(bad)
+        load_questions(bad)
+
+
+def test_positive_int_rejects_zero() -> None:
+    with pytest.raises(argparse.ArgumentTypeError, match="must be >= 1"):
+        positive_int("0")
+
+
+def test_freshness_uses_oldest_source_watermark(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        """
+{
+  "latest_exported_at": "2026-06-10T00:00:00+00:00",
+  "oldest_source_exported_at": "2026-06-01T00:00:00+00:00",
+  "source_watermarks": {
+    "new_source": "2026-06-10T00:00:00+00:00",
+    "stale_source": "2026-06-01T00:00:00+00:00"
+  },
+  "published_at": "2026-06-10T00:00:00+00:00"
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    from datetime import datetime, timezone
+
+    status, detail = check_manifest_freshness(
+        manifest,
+        sla_hours=24,
+        now=datetime(2026, 6, 10, tzinfo=timezone.utc),
+    )
+
+    assert status == "FAIL"
+    assert detail["source_watermark_at"] == "2026-06-01T00:00:00+00:00"

@@ -8,7 +8,16 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Dict, List, Tuple
+
+REQUIRED_DOC_IDS = {
+    "policy_refund_v4",
+    "sla_p1_2026",
+    "it_helpdesk_faq",
+    "hr_leave_policy",
+    "access_control_sop",
+}
 
 
 @dataclass
@@ -109,6 +118,66 @@ def run_expectations(cleaned_rows: List[Dict[str, Any]]) -> Tuple[List[Expectati
             ok6,
             "halt",
             f"violations={len(bad_hr_annual)}",
+        )
+    )
+
+    # E7: snapshot publish phải có đủ 5 nguồn canonical phục vụ grading.
+    present_doc_ids = {str(r.get("doc_id") or "") for r in cleaned_rows}
+    missing_doc_ids = sorted(REQUIRED_DOC_IDS - present_doc_ids)
+    results.append(
+        ExpectationResult(
+            "required_canonical_sources_present",
+            not missing_doc_ids,
+            "halt",
+            f"missing_doc_ids={missing_doc_ids}",
+        )
+    )
+
+    # E8: chunk_id là natural key của vector upsert nên phải unique.
+    chunk_ids = [str(r.get("chunk_id") or "") for r in cleaned_rows]
+    duplicate_chunk_ids = len(chunk_ids) - len(set(chunk_ids))
+    results.append(
+        ExpectationResult(
+            "unique_nonempty_chunk_id",
+            all(chunk_ids) and duplicate_chunk_ids == 0,
+            "halt",
+            f"empty={sum(not x for x in chunk_ids)}, duplicates={duplicate_chunk_ids}",
+        )
+    )
+
+    # E9: exported_at phải parse được sau transform để freshness có ý nghĩa.
+    bad_exported_at = []
+    for row in cleaned_rows:
+        raw = str(row.get("exported_at") or "")
+        try:
+            datetime.fromisoformat(raw)
+        except ValueError:
+            bad_exported_at.append(row)
+    results.append(
+        ExpectationResult(
+            "exported_at_iso_datetime",
+            not bad_exported_at,
+            "halt",
+            f"non_iso_rows={len(bad_exported_at)}",
+        )
+    )
+
+    # E10: các marker migration/noise không được publish vào retrieval context.
+    noisy = [
+        r
+        for r in cleaned_rows
+        if re.search(
+            r"(nội dung không rõ ràng|!{2,}|làm việc\s+làm việc)",
+            str(r.get("chunk_text") or ""),
+            re.IGNORECASE,
+        )
+    ]
+    results.append(
+        ExpectationResult(
+            "no_known_noise_markers",
+            not noisy,
+            "halt",
+            f"violations={len(noisy)}",
         )
     )
 

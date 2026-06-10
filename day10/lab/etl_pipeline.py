@@ -17,6 +17,7 @@ Chế độ inject (Sprint 3 — bỏ fix refund để expectation fail / eval x
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import sys
@@ -56,6 +57,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     log_path = LOG_DIR / f"run_{run_id.replace(':', '-')}.log"
     for p in (LOG_DIR, MAN_DIR, QUAR_DIR, CLEAN_DIR):
         p.mkdir(parents=True, exist_ok=True)
+    # A run_id identifies one evidence snapshot; rerunning it replaces its log.
+    log_path.write_text("", encoding="utf-8")
 
     def log(msg: str) -> None:
         print(msg)
@@ -88,7 +91,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         log("PIPELINE_HALT: expectation suite failed (halt).")
         return 2
     if halt and args.skip_validate:
-        log("WARN: expectation failed but --skip-validate → tiếp tục embed (chỉ dùng cho demo Sprint 3).")
+        log("WARN: expectation failed but --skip-validate -> continuing demo embed.")
 
     # Embed
     embed_ok = cmd_embed_internal(
@@ -111,6 +114,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         "cleaned_records": len(cleaned),
         "quarantine_records": len(quarantine),
         "latest_exported_at": latest_exported,
+        "published_at": datetime.now(timezone.utc).isoformat(),
         "no_refund_fix": bool(args.no_refund_fix),
         "skipped_validate": bool(args.skip_validate and halt),
         "cleaned_csv": str(cleaned_path.relative_to(ROOT)),
@@ -121,7 +125,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     man_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     log(f"manifest_written={man_path.relative_to(ROOT)}")
 
-    status, fdetail = check_manifest_freshness(man_path, sla_hours=float(os.environ.get("FRESHNESS_SLA_HOURS", "24")))
+    status, fdetail = check_manifest_freshness(
+        man_path,
+        sla_hours=float(os.environ.get("FRESHNESS_SLA_HOURS", "24")),
+    )
     log(f"freshness_check={status} {json.dumps(fdetail, ensure_ascii=False)}")
 
     log("PIPELINE_OK")
@@ -142,14 +149,22 @@ def cmd_embed_internal(cleaned_csv: Path, *, run_id: str, log) -> bool:
 
     from transform.cleaning_rules import load_raw_csv as load_csv  # same loader
 
-    rows = load_csv(cleaned_csv)
+    try:
+        rows = load_csv(cleaned_csv)
+    except (OSError, csv.Error) as exc:
+        log(f"ERROR: cannot read cleaned CSV: {exc}")
+        return False
     if not rows:
         log("WARN: cleaned CSV rỗng — không embed.")
         return True
 
-    client = chromadb.PersistentClient(path=db_path)
-    emb = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=model_name)
-    col = client.get_or_create_collection(name=collection_name, embedding_function=emb)
+    try:
+        client = chromadb.PersistentClient(path=db_path)
+        emb = embedding_functions.SentenceTransformerEmbeddingFunction(model_name=model_name)
+        col = client.get_or_create_collection(name=collection_name, embedding_function=emb)
+    except Exception as exc:
+        log(f"ERROR: vector store setup failed: {exc}")
+        return False
 
     ids = [r["chunk_id"] for r in rows]
     # Tránh “mồi cũ” trong top-k: xóa id không còn trong cleaned run này (index = snapshot publish).
@@ -172,7 +187,11 @@ def cmd_embed_internal(cleaned_csv: Path, *, run_id: str, log) -> bool:
         for r in rows
     ]
     # Idempotent: upsert theo chunk_id
-    col.upsert(ids=ids, documents=documents, metadatas=metadatas)
+    try:
+        col.upsert(ids=ids, documents=documents, metadatas=metadatas)
+    except Exception as exc:
+        log(f"ERROR: embed upsert failed: {exc}")
+        return False
     log(f"embed_upsert count={len(ids)} collection={collection_name}")
     return True
 
@@ -212,7 +231,14 @@ def main() -> int:
     p_fr.set_defaults(func=cmd_freshness)
 
     args = parser.parse_args()
-    return int(args.func(args))
+    try:
+        return int(args.func(args))
+    except (OSError, csv.Error, json.JSONDecodeError, ValueError) as exc:
+        print(f"PIPELINE_ERROR: {exc}", file=sys.stderr)
+        return 10
+    except Exception as exc:
+        print(f"PIPELINE_UNEXPECTED_ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 11
 
 
 if __name__ == "__main__":

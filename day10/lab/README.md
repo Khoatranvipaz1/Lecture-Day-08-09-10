@@ -144,6 +144,36 @@ cp .env.example .env
 
 ## Chạy pipeline
 
+### Một lệnh chạy bản final
+
+```powershell
+.venv\Scripts\python.exe etl_pipeline.py run --run-id final-good
+```
+
+### Trạng thái đã kiểm chứng
+
+| Yêu cầu README / rubric | Bằng chứng hiện có | Kết quả |
+|-------------------------|--------------------|---------|
+| Pipeline chuẩn exit 0 | `artifacts/logs/run_final-good.log` | PASS |
+| Log đủ run_id và volume | raw 247, cleaned 33, quarantine 214 | PASS |
+| ≥3 cleaning rules mới | exported timestamp, HR content/cutoff, noise/repeat cleanup, stable ID | PASS |
+| ≥2 expectations mới | source coverage, unique ID, exported datetime, noise markers | PASS |
+| Idempotent + prune | stable `chunk_id`, Chroma upsert/prune | PASS |
+| Try/except theo stage | JSON, file I/O, model/Chroma, query, upsert | Exit code có kiểm soát, không traceback thô |
+| Before/after retrieval | `after_inject_bad.csv` → `after_fix.csv` | 20/21 → 21/21 |
+| Grading chính thức | `artifacts/eval/grading_run.jsonl` | 10/10 |
+| Freshness hai boundary | manifest `latest_exported_at` + `published_at` | Source FAIL đúng kỳ vọng; publish mới |
+| Docs + reports | `docs/*.md`, `reports/group_report.md`, `reports/individual/khoa.md` | PASS |
+
+Lệnh kiểm tra lại toàn bộ kết quả cuối:
+
+```powershell
+.venv\Scripts\python.exe -m pytest -q
+.venv\Scripts\python.exe eval_retrieval.py --out artifacts\eval\after_fix.csv
+.venv\Scripts\python.exe grading_run.py --out artifacts\eval\grading_run.jsonl
+.venv\Scripts\python.exe instructor_quick_check.py --grading artifacts\eval\grading_run.jsonl --manifest artifacts\manifests\manifest_final-good.json
+```
+
 ### Luồng chuẩn (sau khi đã sửa pipeline)
 
 ```bash

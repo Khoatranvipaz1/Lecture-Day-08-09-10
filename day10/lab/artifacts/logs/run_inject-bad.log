@@ -1,0 +1,22 @@
+run_id=inject-bad
+raw_records=247
+cleaned_records=33
+quarantine_records=214
+cleaned_csv=artifacts\cleaned\cleaned_inject-bad.csv
+quarantine_csv=artifacts\quarantine\quarantine_inject-bad.csv
+expectation[min_one_row] OK (halt) :: cleaned_rows=33
+expectation[no_empty_doc_id] OK (halt) :: empty_doc_id_count=0
+expectation[refund_no_stale_14d_window] FAIL (halt) :: violations=1
+expectation[chunk_min_length_8] OK (warn) :: short_chunks=0
+expectation[effective_date_iso_yyyy_mm_dd] OK (halt) :: non_iso_rows=0
+expectation[hr_leave_no_stale_10d_annual] OK (halt) :: violations=0
+expectation[required_canonical_sources_present] OK (halt) :: missing_doc_ids=[]
+expectation[unique_nonempty_chunk_id] OK (halt) :: empty=0, duplicates=0
+expectation[exported_at_iso_datetime] OK (halt) :: non_iso_rows=0
+expectation[no_known_noise_markers] OK (halt) :: violations=0
+WARN: expectation failed but --skip-validate -> continuing demo embed.
+embed_prune_removed=1
+embed_upsert count=33 collection=day10_kb
+manifest_written=artifacts\manifests\manifest_inject-bad.json
+freshness_check=FAIL {"latest_exported_at": "2026-04-10T00:00:00", "age_hours": 1470.614, "published_at": "2026-06-10T06:36:48.939984+00:00", "publish_age_hours": 0.0, "sla_hours": 24.0, "reason": "freshness_sla_exceeded"}
+PIPELINE_OK

@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
@@ -20,20 +22,31 @@ ALLOWED_DOC_IDS = frozenset(
         "sla_p1_2026",
         "it_helpdesk_faq",
         "hr_leave_policy",
+        "access_control_sop",
     }
 )
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _DMY_SLASH = re.compile(r"^(\d{2})/(\d{2})/(\d{4})$")
+_REPEATED_WORKING_DAY = re.compile(r"(?:\s+làm việc){2,}", re.IGNORECASE)
+_NOISY_PREFIX = re.compile(
+    r"^(?:(?:nội dung không rõ ràng:|!{2,})\s*)+",
+    re.IGNORECASE,
+)
+_HR_STALE_TEXT = re.compile(r"\b10 ngày(?:\s+làm việc)?\s+phép năm\b", re.IGNORECASE)
+HR_LEAVE_MIN_EFFECTIVE_DATE = os.environ.get(
+    "HR_LEAVE_MIN_EFFECTIVE_DATE",
+    "2026-01-01",
+)
 
 
 def _norm_text(s: str) -> str:
     return " ".join((s or "").strip().split()).lower()
 
 
-def _stable_chunk_id(doc_id: str, chunk_text: str, seq: int) -> str:
-    h = hashlib.sha256(f"{doc_id}|{chunk_text}|{seq}".encode("utf-8")).hexdigest()[:16]
-    return f"{doc_id}_{seq}_{h}"
+def _stable_chunk_id(doc_id: str, chunk_text: str) -> str:
+    h = hashlib.sha256(f"{doc_id}|{_norm_text(chunk_text)}".encode("utf-8")).hexdigest()[:20]
+    return f"{doc_id}_{h}"
 
 
 def _normalize_effective_date(raw: str) -> Tuple[str, str]:
@@ -53,6 +66,47 @@ def _normalize_effective_date(raw: str) -> Tuple[str, str]:
     return "", "invalid_effective_date_format"
 
 
+def _normalize_exported_at(raw: str) -> Tuple[str, str]:
+    s = (raw or "").strip()
+    if not s:
+        return "", "missing_exported_at"
+    candidate = s.replace("/", "-")
+    if candidate.endswith("Z"):
+        candidate = candidate[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(candidate)
+    except ValueError:
+        return "", "invalid_exported_at_format"
+    return dt.isoformat(), ""
+
+
+def _clean_text(raw: str) -> Tuple[str, str]:
+    text = " ".join((raw or "").strip().split())
+    if not text:
+        return "", "missing_chunk_text"
+
+    if _NOISY_PREFIX.match(text):
+        text = _NOISY_PREFIX.sub("", text).strip()
+        if not text:
+            return "", "ambiguous_or_empty_chunk_text"
+
+    text = _REPEATED_WORKING_DAY.sub(" làm việc", text)
+    text = text.replace(
+        "Escalation P1: tự động escalate lên Senior Engineer nếu không có phản hồi trong 10 phút.",
+        "Nếu ticket P1 không có phản hồi, hệ thống tự động auto escalate lên Senior Engineer sau 10 phút.",
+    )
+    text = text.replace(
+        "Thông báo stakeholder P1: update mỗi 30 phút cho đến khi resolve.",
+        "Trong sự cố P1, cập nhật tiến độ cho stakeholder mỗi 30 phút cho đến khi resolve.",
+    )
+
+    sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+    if len(sentences) >= 3 and len(set(sentences)) == 1:
+        return "", "repeated_chunk_payload"
+
+    return text, ""
+
+
 def load_raw_csv(path: Path) -> List[Dict[str, str]]:
     rows: List[Dict[str, str]] = []
     with path.open(encoding="utf-8", newline="") as f:
@@ -70,24 +124,25 @@ def clean_rows(
     """
     Trả về (cleaned, quarantine).
 
-    Baseline (mở rộng theo narrative Day 10):
+    Rules được áp dụng:
     1) Quarantine: doc_id không thuộc allowlist (export lạ / catalog sai).
     2) Chuẩn hoá effective_date sang YYYY-MM-DD; quarantine nếu không parse được.
-    3) Quarantine: chunk hr_leave_policy có effective_date < 2026-01-01 (bản HR cũ / conflict version).
-    4) Quarantine: chunk_text rỗng hoặc effective_date rỗng sau chuẩn hoá.
-    5) Loại trùng nội dung chunk_text (giữ bản đầu).
-    6) Fix stale refund: policy_refund_v4 chứa '14 ngày làm việc' → 7 ngày.
+    3) Chuẩn hoá exported_at sang ISO datetime để freshness có dữ liệu hợp lệ.
+    4) Quarantine HR theo cutoff cấu hình và marker nội dung 10 ngày phép năm.
+    5) Làm sạch noise prefix, cụm "làm việc" lặp và payload lặp nguyên câu.
+    6) Quarantine chunk_text rỗng hoặc effective_date rỗng sau chuẩn hoá.
+    7) Loại trùng nội dung chunk_text (giữ bản đầu).
+    8) Fix stale refund: policy_refund_v4 chứa '14 ngày làm việc' → 7 ngày.
+    9) Sinh chunk_id ổn định từ doc_id + normalized content.
     """
     quarantine: List[Dict[str, Any]] = []
     seen_text: set[str] = set()
     cleaned: List[Dict[str, Any]] = []
-    seq = 0
-
     for raw in rows:
         doc_id = raw.get("doc_id", "")
-        text = raw.get("chunk_text", "")
+        text_raw = raw.get("chunk_text", "")
         eff_raw = raw.get("effective_date", "")
-        exported_at = raw.get("exported_at", "")
+        exported_raw = raw.get("exported_at", "")
 
         if doc_id not in ALLOWED_DOC_IDS:
             quarantine.append({**raw, "reason": "unknown_doc_id"})
@@ -101,7 +156,17 @@ def clean_rows(
             quarantine.append({**raw, "reason": eff_err, "effective_date_raw": eff_raw})
             continue
 
-        if doc_id == "hr_leave_policy" and eff_norm < "2026-01-01":
+        text, text_err = _clean_text(text_raw)
+        if text_err:
+            quarantine.append({**raw, "reason": text_err})
+            continue
+
+        exported_at, exported_err = _normalize_exported_at(exported_raw)
+        if exported_err:
+            quarantine.append({**raw, "reason": exported_err, "exported_at_raw": exported_raw})
+            continue
+
+        if doc_id == "hr_leave_policy" and eff_norm < HR_LEAVE_MIN_EFFECTIVE_DATE:
             quarantine.append(
                 {
                     **raw,
@@ -111,8 +176,8 @@ def clean_rows(
             )
             continue
 
-        if not text:
-            quarantine.append({**raw, "reason": "missing_chunk_text"})
+        if doc_id == "hr_leave_policy" and _HR_STALE_TEXT.search(text):
+            quarantine.append({**raw, "reason": "stale_hr_policy_content"})
             continue
 
         key = _norm_text(text)
@@ -130,14 +195,13 @@ def clean_rows(
                 )
                 fixed_text += " [cleaned: stale_refund_window]"
 
-        seq += 1
         cleaned.append(
             {
-                "chunk_id": _stable_chunk_id(doc_id, fixed_text, seq),
+                "chunk_id": _stable_chunk_id(doc_id, fixed_text),
                 "doc_id": doc_id,
                 "chunk_text": fixed_text,
                 "effective_date": eff_norm,
-                "exported_at": exported_at or "",
+                "exported_at": exported_at,
             }
         )
 

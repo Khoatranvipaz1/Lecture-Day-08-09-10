@@ -48,10 +48,17 @@ def check_manifest_freshness(
     if dt is None:
         return "WARN", {"reason": "no_timestamp_in_manifest", "manifest": data}
 
-    age_hours = (now - dt).total_seconds() / 3600.0
+    age_hours = max(0.0, (now - dt).total_seconds() / 3600.0)
+    published_raw = data.get("published_at") or data.get("run_timestamp")
+    published_dt = parse_iso(str(published_raw)) if published_raw else None
+    publish_age_hours = None
+    if published_dt is not None:
+        publish_age_hours = max(0.0, (now - published_dt).total_seconds() / 3600.0)
     detail = {
         "latest_exported_at": ts_raw,
         "age_hours": round(age_hours, 3),
+        "published_at": published_raw,
+        "publish_age_hours": round(publish_age_hours, 3) if publish_age_hours is not None else None,
         "sla_hours": sla_hours,
     }
     if age_hours <= sla_hours:
